@@ -269,6 +269,30 @@ class TestVoicePanelUI(unittest.TestCase):
                 self.assertEqual(win.session.tracks[0].duration_samples, 10000)
                 win.on_undo()
                 self.assertEqual(win.session.tracks[0].duration_samples, 12000)
+
+                # Shift + > moves marker to end of active track; Shift + < moves to beginning
+                from gi.repository import Gdk
+                win.set_focus(None)
+                win.set_playhead(3000)
+                ev_gt = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+                ev_gt.key.keyval = Gdk.KEY_greater
+                ev_gt.key.state = Gdk.ModifierType.SHIFT_MASK
+                self.assertTrue(win._on_window_key_press(win, ev_gt))
+                self.assertEqual(win.session.playhead_sample, 12000)
+
+                ev_lt = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+                ev_lt.key.keyval = Gdk.KEY_less
+                ev_lt.key.state = Gdk.ModifierType.SHIFT_MASK
+                self.assertTrue(win._on_window_key_press(win, ev_lt))
+                self.assertEqual(win.session.playhead_sample, 0)
+
+                # With clip offset > 0, Shift + < lands at clip start first, then 0 on second press
+                win.session.tracks[0].offset_samples = 2400
+                win.set_playhead(8000)
+                self.assertTrue(win._on_window_key_press(win, ev_lt))
+                self.assertEqual(win.session.playhead_sample, 2400)
+                self.assertTrue(win._on_window_key_press(win, ev_lt))
+                self.assertEqual(win.session.playhead_sample, 0)
             finally:
                 win.stop_all()
                 win.destroy()

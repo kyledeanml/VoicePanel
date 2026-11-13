@@ -932,9 +932,14 @@ class VoicePanelWindow(Gtk.ApplicationWindow):
         trans_box.set_margin_start(10)
 
         btn_rew = Gtk.Button.new_from_icon_name("media-skip-backward-symbolic", Gtk.IconSize.BUTTON)
-        btn_rew.set_tooltip_text("Rewind to Start (Home)")
+        btn_rew.set_tooltip_text("Move Marker to Beginning (Home / Shift+<)")
         btn_rew.connect("clicked", lambda b: self.on_rewind())
         trans_box.pack_start(btn_rew, False, False, 0)
+
+        btn_end = Gtk.Button.new_from_icon_name("media-skip-forward-symbolic", Gtk.IconSize.BUTTON)
+        btn_end.set_tooltip_text("Move Marker to End (End / Shift+>)")
+        btn_end.connect("clicked", lambda b: self.on_jump_to_end())
+        trans_box.pack_start(btn_end, False, False, 0)
 
         self.btn_play = Gtk.ToggleButton()
         self.btn_play.set_image(Gtk.Image.new_from_icon_name("media-playback-start-symbolic", Gtk.IconSize.BUTTON))
@@ -1144,14 +1149,18 @@ class VoicePanelWindow(Gtk.ApplicationWindow):
                 self.set_focus(None)
                 return True
             return False
+        shift = bool(getattr(event, "state", 0) & Gdk.ModifierType.SHIFT_MASK)
         if kv == Gdk.KEY_space:
             self.toggle_play()
             return True
         if kv == Gdk.KEY_Escape:
             self.stop_all()
             return True
-        if kv == Gdk.KEY_Home:
+        if kv == Gdk.KEY_Home or kv == Gdk.KEY_less or (shift and kv == Gdk.KEY_comma):
             self.on_rewind()
+            return True
+        if kv == Gdk.KEY_End or kv == Gdk.KEY_greater or (shift and kv == Gdk.KEY_period):
+            self.on_jump_to_end()
             return True
         if kv == Gdk.KEY_Delete:
             self.run_edit("cut")
@@ -1293,8 +1302,27 @@ class VoicePanelWindow(Gtk.ApplicationWindow):
         self.queue_all_redraws()
 
     def on_rewind(self):
-        self.set_playhead(0)
-        self.view_start_sec = 0.0
+        track = self.session.get_active_track()
+        if track.duration_samples > 0 and track.offset_samples > 0 and self.session.playhead_sample > track.offset_samples:
+            target = track.offset_samples
+        else:
+            target = 0
+        self.set_playhead(target)
+        if target == 0:
+            self.view_start_sec = 0.0
+        else:
+            self._ensure_sample_visible(target)
+        self.queue_all_redraws()
+
+    def on_jump_to_end(self):
+        track = self.session.get_active_track()
+        total = self.session.total_samples()
+        if track.duration_samples > 0 and self.session.playhead_sample < track.end_samples:
+            target = track.end_samples
+        else:
+            target = total
+        self.set_playhead(target)
+        self._ensure_sample_visible(target)
         self.queue_all_redraws()
 
     def toggle_play(self):
