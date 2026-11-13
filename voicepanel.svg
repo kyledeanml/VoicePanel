@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Darker Traditional Studio Blue Gradient (Mic Capsule & Main Body) -->
+    <linearGradient id="voiceDarkBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#387eb8" stop-opacity="0.78"/>
+      <stop offset="100%" stop-color="#1e4263" stop-opacity="0.68"/>
+    </linearGradient>
+
+    <!-- Deeper Indigo-Blue Gradient (Shock Mount, Stand & Grille Shadow) -->
+    <linearGradient id="voiceDeepBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2b6496" stop-opacity="0.68"/>
+      <stop offset="100%" stop-color="#15314b" stop-opacity="0.58"/>
+    </linearGradient>
+
+    <!-- Crisp Cyan/Sky Waveform Accent Gradient -->
+    <linearGradient id="voiceWaveCyan" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#00f0ff" stop-opacity="0.82"/>
+      <stop offset="50%" stop-color="#38bdf8" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#2b6496" stop-opacity="0.64"/>
+    </linearGradient>
+
+    <!-- Unassuming Matte Yoga Pad Surface Gradient (shared with PythonPanel) -->
+    <linearGradient id="yogaMatTop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22436d" stop-opacity="0.58"/>
+      <stop offset="100%" stop-color="#152943" stop-opacity="0.50"/>
+    </linearGradient>
+
+    <!-- Yoga Pad Rolled End Gradient (shared with PythonPanel) -->
+    <linearGradient id="yogaRoll" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2d578b" stop-opacity="0.68"/>
+      <stop offset="100%" stop-color="#13253d" stop-opacity="0.58"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Unassuming Yoga Pad / Mat in Perspective (PythonPanel family base) -->
+  <g transform="translate(26, 62) scale(1.28)">
+    <!-- Subtle floor shadow beneath the yoga pad -->
+    <path d="M 48 258 L 288 258 L 328 214 L 92 214 Z"
+          fill="#060c17" fill-opacity="0.45"/>
+
+    <!-- Yoga Pad Thickness / Bottom Edge -->
+    <path d="M 44 248 L 282 248 L 322 204 L 322 211 L 282 255 L 44 255 Z"
+          fill="#1b3556" fill-opacity="0.65"
+          stroke="#387eb8" stroke-width="1.2" stroke-opacity="0.55" stroke-linejoin="round"/>
+
+    <!-- Yoga Pad Main Flat Surface -->
+    <path d="M 44 248 L 282 248 L 322 204 L 88 204 Z"
+          fill="url(#yogaMatTop)"
+          stroke="#387eb8" stroke-width="1.5" stroke-opacity="0.60" stroke-linejoin="round"/>
+
+    <!-- Subtle Non-Slip Texture Lines & Center Alignment Line on the Yoga Pad -->
+    <line x1="70" y1="226" x2="298" y2="226"
+          stroke="#5ba4e5" stroke-width="1.1" stroke-opacity="0.38" stroke-dasharray="6,5"/>
+    <line x1="176" y1="207" x2="152" y2="245"
+          stroke="#5ba4e5" stroke-width="1.0" stroke-opacity="0.32"/>
+
+    <!-- Rolled-Up End of the Yoga Pad (Left Side Cylinder) -->
+    <path d="M 38 236 C 34 236 31 240 31 245 C 31 250 34 254 38 254 L 82 208 C 78 208 75 204 75 199 C 75 194 78 190 82 190 Z"
+          fill="url(#yogaRoll)"
+          stroke="#387eb8" stroke-width="1.3" stroke-opacity="0.62"/>
+
+    <!-- Yoga Pad Roll Spiral End-Cap -->
+    <ellipse cx="40" cy="245" rx="7.5" ry="9.5"
+             fill="#152943" fill-opacity="0.72"
+             stroke="#4b91d1" stroke-width="1.3" stroke-opacity="0.65"/>
+    <path d="M 40 241 C 42 241 43 243 43 245 C 43 247 41 249 39 249 C 37 249 36 246 37 244"
+          fill="none" stroke="#63b3ed" stroke-width="1.1" stroke-opacity="0.60" stroke-linecap="round"/>
+
+    <!-- Soft Contact Shadow Where the Studio Mic & Waveforms Rest on the Pad -->
+    <ellipse cx="182" cy="226" rx="68" ry="13"
+             fill="#07111f" fill-opacity="0.58"/>
+  </g>
+
+  <!-- Translucent Darker-Blue Studio Microphone & 4-Track Waveform Emblem on the Pad -->
+  <g transform="translate(120, 48) scale(1.42)">
+    <!-- Flanking 4-Bar Audio Waveform Channels (Left) -->
+    <rect x="10" y="96" width="9" height="40" rx="4.5" fill="url(#voiceWaveCyan)" stroke="#7dd3fc" stroke-width="0.9" stroke-opacity="0.7"/>
+    <rect x="25" y="74" width="9" height="84" rx="4.5" fill="url(#voiceWaveCyan)" stroke="#00f0ff" stroke-width="1.0" stroke-opacity="0.78"/>
+    <rect x="40" y="86" width="9" height="60" rx="4.5" fill="url(#voiceDarkBlue)" stroke="#63b3ed" stroke-width="0.9" stroke-opacity="0.68"/>
+    <rect x="55" y="64" width="9" height="104" rx="4.5" fill="url(#voiceWaveCyan)" stroke="#00f0ff" stroke-width="1.1" stroke-opacity="0.80"/>
+
+    <!-- Flanking 4-Bar Audio Waveform Channels (Right) -->
+    <rect x="132" y="64" width="9" height="104" rx="4.5" fill="url(#voiceWaveCyan)" stroke="#00f0ff" stroke-width="1.1" stroke-opacity="0.80"/>
+    <rect x="147" y="86" width="9" height="60" rx="4.5" fill="url(#voiceDarkBlue)" stroke="#63b3ed" stroke-width="0.9" stroke-opacity="0.68"/>
+    <rect x="162" y="74" width="9" height="84" rx="4.5" fill="url(#voiceWaveCyan)" stroke="#00f0ff" stroke-width="1.0" stroke-opacity="0.78"/>
+    <rect x="177" y="96" width="9" height="40" rx="4.5" fill="url(#voiceWaveCyan)" stroke="#7dd3fc" stroke-width="0.9" stroke-opacity="0.7"/>
+
+    <!-- Studio Condenser Microphone Capsule -->
+    <rect x="75" y="26" width="46" height="102" rx="23"
+          fill="url(#voiceDarkBlue)"
+          stroke="#7dd3fc" stroke-width="1.8" stroke-opacity="0.78"/>
+
+    <!-- Capsule Inner Metallic Band -->
+    <rect x="75" y="76" width="46" height="10"
+          fill="#0a0e1a" fill-opacity="0.32"
+          stroke="#63b3ed" stroke-width="1.1" stroke-opacity="0.62"/>
+
+    <!-- Crisp Grille Acoustic Slots -->
+    <line x1="85" y1="44" x2="111" y2="44" stroke="#bae6fd" stroke-width="2.1" stroke-opacity="0.72" stroke-linecap="round"/>
+    <line x1="83" y1="54" x2="113" y2="54" stroke="#bae6fd" stroke-width="2.1" stroke-opacity="0.72" stroke-linecap="round"/>
+    <line x1="83" y1="64" x2="113" y2="64" stroke="#bae6fd" stroke-width="2.1" stroke-opacity="0.72" stroke-linecap="round"/>
+
+    <!-- Subtle Record Status LED Dot on Mic Body -->
+    <circle cx="98" cy="103" r="4.5" fill="#00f0ff" fill-opacity="0.85" stroke="#ffffff" stroke-width="0.8" stroke-opacity="0.6"/>
+
+    <!-- U-Bracket / Shock Mount Cradle -->
+    <path d="M 65 88 L 65 112 C 65 130 80 144 98 144 C 116 144 131 130 131 112 L 131 88"
+          fill="none" stroke="#63b3ed" stroke-width="3.6" stroke-opacity="0.76" stroke-linecap="round"/>
+    <circle cx="65" cy="90" r="3.8" fill="#bae6fd" fill-opacity="0.8"/>
+    <circle cx="131" cy="90" r="3.8" fill="#bae6fd" fill-opacity="0.8"/>
+
+    <!-- Desk Stem & Base Disc -->
+    <line x1="98" y1="144" x2="98" y2="174" stroke="#5ba4e5" stroke-width="4.2" stroke-opacity="0.74" stroke-linecap="round"/>
+    <ellipse cx="98" cy="176" rx="28" ry="6.5"
+             fill="url(#voiceDeepBlue)"
+             stroke="#7dd3fc" stroke-width="1.5" stroke-opacity="0.72"/>
+  </g>
+</svg>

@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=VoicePanel
+Comment=4-track audio editor and microphone recorder in PythonPanel neon style
+GenericName=4-Track Audio Studio
+Exec=/home/bluechile/voicepanel/run.sh %F
+Icon=voicepanel
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Recorder;GTK;
+MimeType=audio/wav;audio/x-wav;audio/mpeg;audio/ogg;audio/flac;
+StartupNotify=true
+StartupWMClass=voicepanel
+Keywords=audio;recorder;microphone;multitrack;4-track;voice;editor;wav;mp3;voicepanel;
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=Open a New Window
+Exec=/home/bluechile/voicepanel/run.sh
