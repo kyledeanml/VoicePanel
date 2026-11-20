@@ -305,5 +305,133 @@ class TestVoicePanelUI(unittest.TestCase):
                 pass
 
 
+class TestSecurityAndIntegrityHardening(unittest.TestCase):
+    """Penetration, attack-vector, and error-resilience tests for VoicePanel."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="voicepanel_sec_test_")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_vpanel_hostile_project_json_and_markup_injection_sanitization(self):
+        import json
+        import zipfile
+        import audio_engine
+        from voicepanel import hex_to_rgb
+
+        hostile_vpanel = os.path.join(self.tmp_dir, "hostile.vpanel")
+        hostile_meta = {
+            "sample_rate": 0,  # ZeroDivisionError vector
+            "active_track": 999,
+            "playhead_sample": 999_999_999_999,
+            "tracks": [
+                {
+                    "index": 0,
+                    "name": "Evil\x00\nTrack",
+                    "offset_samples": 999_999_999_999,
+                    "volume": 999.0,
+                    "pan": -999.0,
+                    "color_hex": "red' font_desc='9999'><b>INJECT",
+                    "wav_file": "../../etc/passwd",
+                }
+            ],
+        }
+        with zipfile.ZipFile(hostile_vpanel, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("project.json", json.dumps(hostile_meta).encode("utf-8"))
+            zf.writestr("../../etc/passwd", b"fake")
+
+        sess = MultiTrackSession()
+        sess.load_project(hostile_vpanel)
+        self.assertGreaterEqual(sess.sample_rate, audio_engine.MIN_SAMPLE_RATE)
+        self.assertEqual(sess.active_track_index, NUM_TRACKS - 1)
+        self.assertLessEqual(sess.playhead_sample, audio_engine.MAX_TIMELINE_SAMPLES)
+
+        t0 = sess.tracks[0]
+        self.assertNotIn("\x00", t0.name)
+        self.assertNotIn("\n", t0.name)
+        self.assertLessEqual(t0.offset_samples, audio_engine.MAX_TIMELINE_SAMPLES)
+        self.assertLessEqual(t0.volume, 2.0)
+        self.assertEqual(t0.pan, -1.0)
+        self.assertEqual(t0.color_hex, "#00f0ff")
+        self.assertEqual(t0.duration_samples, 0)
+        # hex_to_rgb must never crash even if given arbitrary non-hex input
+        self.assertEqual(hex_to_rgb("not-a-color';<b>"), (0.0, 240.0 / 255.0, 1.0))
+
+    def test_vpanel_zip_bomb_and_oversized_import_protection(self):
+        import zipfile
+        import audio_engine
+
+        bomb_vpanel = os.path.join(self.tmp_dir, "bomb.vpanel")
+        with zipfile.ZipFile(bomb_vpanel, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("project.json", b'{"tracks": []}' + (b" " * 4096))
+
+        sess = MultiTrackSession()
+        orig_json_cap = audio_engine.MAX_PROJECT_JSON_BYTES
+        try:
+            audio_engine.MAX_PROJECT_JSON_BYTES = 512
+            with self.assertRaises(ValueError):
+                sess.load_project(bomb_vpanel)
+        finally:
+            audio_engine.MAX_PROJECT_JSON_BYTES = orig_json_cap
+
+        big_wav = os.path.join(self.tmp_dir, "big.wav")
+        with open(big_wav, "wb") as f:
+            f.write(wav_bytes_from_float32(sine_stereo(440.0, 0.1)))
+
+        orig_imp_cap = audio_engine.MAX_IMPORT_FILE_BYTES
+        try:
+            audio_engine.MAX_IMPORT_FILE_BYTES = 256
+            with self.assertRaises(ValueError):
+                sess.import_audio_file(big_wav)
+        finally:
+            audio_engine.MAX_IMPORT_FILE_BYTES = orig_imp_cap
+
+    def test_fifo_directory_and_null_byte_rejection(self):
+        fifo_path = os.path.join(self.tmp_dir, "trap.fifo")
+        os.mkfifo(fifo_path)
+        sess = MultiTrackSession()
+
+        for bad in (fifo_path, self.tmp_dir, os.path.join(self.tmp_dir, "bad\x00.wav")):
+            with self.subTest(path=bad):
+                with self.assertRaises((ValueError, IsADirectoryError)):
+                    sess.import_audio_file(bad)
+                with self.assertRaises((ValueError, IsADirectoryError)):
+                    sess.load_project(bad)
+
+        with self.assertRaises(IsADirectoryError):
+            sess.save_project(self.tmp_dir)
+        with self.assertRaises(IsADirectoryError):
+            sess.export_mix(self.tmp_dir)
+
+    def test_astronomical_timeline_offset_oom_prevention(self):
+        import audio_engine
+
+        with self.assertRaises(ValueError):
+            audio_engine.empty_stereo(audio_engine.MAX_TIMELINE_SAMPLES + 100)
+
+        sess = MultiTrackSession()
+        clip = sine_stereo(440.0, 0.05)
+        with self.assertRaises(ValueError):
+            sess.commit_recording(clip, start_sample=audio_engine.MAX_TIMELINE_SAMPLES)
+
+        sess.clipboard = clip
+        sess.playhead_sample = audio_engine.MAX_TIMELINE_SAMPLES
+        with self.assertRaises(ValueError):
+            sess.paste_at_playhead(track_index=0)
+
+    def test_recorder_device_name_control_char_sanitization(self):
+        rec = AudioRecorder(sample_rate=48000, device_name="alsa_input.pci\n\r\x00_evil")
+        with patch("shutil.which", side_effect=lambda n: "/usr/bin/parec" if n == "parec" else None):
+            spec = rec._build_capture_cmd()
+        self.assertIsNotNone(spec)
+        _, cmd, _ = spec
+        dev_arg = [a for a in cmd if a.startswith("--device=")][0]
+        self.assertNotIn("\n", dev_arg)
+        self.assertNotIn("\r", dev_arg)
+        self.assertNotIn("\x00", dev_arg)
+
+
 if __name__ == "__main__":
     unittest.main()

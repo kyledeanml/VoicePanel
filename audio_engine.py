@@ -9,9 +9,12 @@ range editing with Undo/Redo, and .wav/.mp3/.flac/.ogg/.vpanel I/O.
 import io
 import json
 import os
+import re
 import shutil
+import stat
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import wave
@@ -23,7 +26,14 @@ import numpy as np
 
 
 DEFAULT_SAMPLE_RATE = 48000
+MIN_SAMPLE_RATE = 8000
+MAX_SAMPLE_RATE = 192000
 NUM_TRACKS = 4
+MAX_TRACK_SAMPLES = 48000 * 1800      # 30 minutes at 48 kHz safety cap
+MAX_TIMELINE_SAMPLES = 48000 * 3600   # 60 minutes timeline offset cap
+MAX_IMPORT_FILE_BYTES = 150 * 1024 * 1024  # 150 MB raw audio file / zip member cap
+MAX_PROJECT_JSON_BYTES = 1 * 1024 * 1024   # 1 MB project.json cap
+
 TRACK_COLORS = [
     "#00f0ff",  # Track 1: Neon Cyan
     "#38bdf8",  # Track 2: Electric Sky
@@ -31,13 +41,48 @@ TRACK_COLORS = [
     "#10b981",  # Track 4: Emerald Pulse
 ]
 
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_SAFE_WAV_MEMBER_RE = re.compile(r"^track_[0-9]+\.wav$")
+
 SUPPORTED_AUDIO_EXTS = (".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".opus", ".wma")
+
+
+def sanitize_hex_color(color: str, fallback: str = "#00f0ff") -> str:
+    if isinstance(color, str) and _HEX_COLOR_RE.match(color.strip()):
+        return color.strip().lower()
+    return fallback
+
+
+def clamp_sample_rate(rate: int) -> int:
+    try:
+        r = int(rate)
+    except (ValueError, TypeError):
+        return DEFAULT_SAMPLE_RATE
+    return max(MIN_SAMPLE_RATE, min(MAX_SAMPLE_RATE, r))
+
+
+def verify_regular_file(path: str, max_bytes: Optional[int] = None) -> str:
+    if not path or not isinstance(path, str) or "\x00" in path:
+        raise ValueError("Invalid file path.")
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"File not found: {abs_path}")
+    if os.path.isdir(abs_path):
+        raise IsADirectoryError(f"Path is a directory: {abs_path}")
+    st = os.stat(abs_path)
+    if not stat.S_ISREG(st.st_mode):
+        raise ValueError(f"Refusing to open non-regular file (FIFO/device/socket): {abs_path}")
+    if max_bytes is not None and st.st_size > max_bytes:
+        raise ValueError(f"File size ({st.st_size} bytes) exceeds maximum limit ({max_bytes} bytes).")
+    return abs_path
 
 
 def empty_stereo(num_samples: int = 0) -> np.ndarray:
     if num_samples <= 0:
         return np.zeros((0, 2), dtype=np.float32)
-    return np.zeros((num_samples, 2), dtype=np.float32)
+    if num_samples > MAX_TIMELINE_SAMPLES:
+        raise ValueError(f"Requested sample buffer ({num_samples}) exceeds maximum timeline limit ({MAX_TIMELINE_SAMPLES}).")
+    return np.zeros((int(num_samples), 2), dtype=np.float32)
 
 
 def ensure_stereo_float32(arr: np.ndarray) -> np.ndarray:
@@ -62,7 +107,10 @@ def resample_linear(samples: np.ndarray, src_rate: int, dst_rate: int) -> np.nda
     samples = ensure_stereo_float32(samples)
     if src_rate <= 0 or dst_rate <= 0 or src_rate == dst_rate or len(samples) < 2:
         return samples
+    dst_rate = clamp_sample_rate(dst_rate)
     new_len = max(1, int(round(len(samples) * float(dst_rate) / float(src_rate))))
+    if new_len > MAX_TRACK_SAMPLES:
+        raise ValueError(f"Resampled audio length ({new_len}) exceeds maximum track limit ({MAX_TRACK_SAMPLES}).")
     x_old = np.linspace(0.0, 1.0, num=len(samples), endpoint=False, dtype=np.float64)
     x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False, dtype=np.float64)
     left = np.interp(x_new, x_old, samples[:, 0]).astype(np.float32)
@@ -86,12 +134,17 @@ def wav_bytes_from_float32(samples: np.ndarray, sample_rate: int = DEFAULT_SAMPL
 
 def float32_from_wav_bytes(data: bytes, target_rate: int = DEFAULT_SAMPLE_RATE) -> Tuple[np.ndarray, int]:
     """Decode uncompressed PCM WAV (8/16/24/32-bit, mono/stereo) into stereo float32."""
+    target_rate = clamp_sample_rate(target_rate)
+    if len(data) > MAX_IMPORT_FILE_BYTES:
+        raise ValueError("WAV data exceeds maximum allowed byte size.")
     with wave.open(io.BytesIO(data), "rb") as wf:
         n_ch = wf.getnchannels()
         sampwidth = wf.getsampwidth()
         src_rate = wf.getframerate()
         n_frames = wf.getnframes()
-        raw = wf.readframes(n_frames)
+        if n_ch <= 0 or n_ch > 16 or src_rate <= 0:
+            raise ValueError("Invalid WAV header channel count or sample rate.")
+        raw = wf.readframes(min(n_frames, MAX_TRACK_SAMPLES))
 
     if n_frames == 0 or not raw:
         return empty_stereo(0), target_rate
@@ -139,10 +192,10 @@ class AudioTrack:
     def __post_init__(self):
         if not self.name:
             self.name = f"Track {self.index + 1}"
-        if not self.color_hex:
-            self.color_hex = TRACK_COLORS[self.index % len(TRACK_COLORS)]
+        default_col = TRACK_COLORS[self.index % len(TRACK_COLORS)]
+        self.color_hex = sanitize_hex_color(self.color_hex, fallback=default_col)
         self.samples = ensure_stereo_float32(self.samples)
-        self.offset_samples = max(0, int(self.offset_samples))
+        self.offset_samples = max(0, min(MAX_TIMELINE_SAMPLES, int(self.offset_samples)))
 
     @property
     def duration_samples(self) -> int:
@@ -237,7 +290,7 @@ class MultiTrackSession:
     MAX_UNDO = 40
 
     def __init__(self, sample_rate: int = DEFAULT_SAMPLE_RATE):
-        self.sample_rate = int(sample_rate)
+        self.sample_rate = clamp_sample_rate(sample_rate)
         self.tracks: List[AudioTrack] = [AudioTrack(index=i) for i in range(NUM_TRACKS)]
         self.tracks[0].armed = True
         self.active_track_index = 0
@@ -331,10 +384,13 @@ class MultiTrackSession:
         else:
             track = self.tracks[max(0, min(track_index, NUM_TRACKS - 1))]
 
-        start_sample = max(0, int(start_sample))
-        self.push_undo()
-
+        start_sample = max(0, min(MAX_TIMELINE_SAMPLES, int(start_sample)))
+        if len(rec) > MAX_TRACK_SAMPLES:
+            rec = rec[:MAX_TRACK_SAMPLES]
         rec_end = start_sample + len(rec)
+        if rec_end > MAX_TIMELINE_SAMPLES:
+            raise ValueError("Recording exceeds maximum timeline capacity.")
+        self.push_undo()
         if track.duration_samples == 0:
             track.offset_samples = start_sample
             track.samples = rec
@@ -362,14 +418,16 @@ class MultiTrackSession:
 
     def import_audio_file(self, file_path: str) -> Tuple[np.ndarray, int]:
         """Load any WAV/MP3/OGG/FLAC/M4A file into stereo float32 at session sample_rate."""
-        if not os.path.isfile(file_path):
-            raise FileNotFoundError(f"Audio file not found: {file_path}")
+        abs_file = verify_regular_file(file_path, max_bytes=MAX_IMPORT_FILE_BYTES)
 
-        ext = os.path.splitext(file_path)[1].lower()
+        ext = os.path.splitext(abs_file)[1].lower()
         if ext == ".wav":
             try:
-                with open(file_path, "rb") as f:
-                    return float32_from_wav_bytes(f.read(), target_rate=self.sample_rate)
+                with open(abs_file, "rb") as f:
+                    return float32_from_wav_bytes(f.read(MAX_IMPORT_FILE_BYTES + 1), target_rate=self.sample_rate)
+            except ValueError as ve:
+                if "exceeds maximum" in str(ve):
+                    raise
             except Exception:
                 # Fall through to ffmpeg for IEEE-float / ADPCM / compressed WAV variants
                 pass
@@ -381,8 +439,9 @@ class MultiTrackSession:
         proc = subprocess.run(
             [
                 ffmpeg,
+                "-nostdin",
                 "-v", "error",
-                "-i", file_path,
+                "-i", abs_file,
                 "-f", "f32le",
                 "-acodec", "pcm_f32le",
                 "-ac", "2",
@@ -390,12 +449,16 @@ class MultiTrackSession:
                 "pipe:1",
             ],
             capture_output=True,
+            timeout=60,
             check=False,
         )
         if proc.returncode != 0:
             err = proc.stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"Failed to decode {os.path.basename(file_path)}: {err or 'ffmpeg error'}")
+            raise RuntimeError(f"Failed to decode {os.path.basename(abs_file)}: {err or 'ffmpeg error'}")
 
+        max_pcm_bytes = MAX_TRACK_SAMPLES * 8
+        if len(proc.stdout) > max_pcm_bytes:
+            raise ValueError("Decoded audio stream exceeds maximum track duration limit.")
         n_floats = len(proc.stdout) // 4
         if n_floats < 2:
             return empty_stereo(0), self.sample_rate
@@ -477,7 +540,9 @@ class MultiTrackSession:
             return False
         track = self.tracks[self.active_track_index if track_index is None else track_index]
         clip = ensure_stereo_float32(self.clipboard)
-        pos = max(0, int(self.playhead_sample))
+        pos = max(0, min(MAX_TIMELINE_SAMPLES, int(self.playhead_sample)))
+        if pos + len(clip) > MAX_TIMELINE_SAMPLES:
+            raise ValueError("Paste position exceeds maximum timeline limit.")
         self.push_undo()
         if track.duration_samples == 0:
             track.offset_samples = pos
@@ -565,7 +630,8 @@ class MultiTrackSession:
 
     def nudge_track(self, track_index: int, delta_samples: int, push_undo: bool = True) -> int:
         track = self.tracks[max(0, min(track_index, NUM_TRACKS - 1))]
-        new_off = max(0, int(track.offset_samples + delta_samples))
+        max_off = max(0, MAX_TIMELINE_SAMPLES - track.duration_samples)
+        new_off = max(0, min(max_off, int(track.offset_samples + delta_samples)))
         if new_off != track.offset_samples:
             if push_undo:
                 self.push_undo()
@@ -627,18 +693,36 @@ class MultiTrackSession:
 
     def export_mix(self, out_path: str, file_format: Optional[str] = None):
         """Export mixed 4-track project to WAV cleanly or MP3/FLAC/OGG/M4A via ffmpeg."""
+        if not out_path or not isinstance(out_path, str) or "\x00" in out_path:
+            raise ValueError("Invalid export file path.")
+        out_abs = os.path.abspath(out_path)
+        if os.path.isdir(out_abs):
+            raise IsADirectoryError(f"Cannot export over directory: {out_abs}")
+        out_dir = os.path.dirname(out_abs) or "."
+        os.makedirs(out_dir, exist_ok=True)
+
         total = self.total_samples()
         if total <= 0:
             mix = empty_stereo(int(self.sample_rate * 0.25))
         else:
             mix = self.mixdown(0, total)
 
-        ext = (file_format or os.path.splitext(out_path)[1].lstrip(".") or "wav").lower()
+        ext = (file_format or os.path.splitext(out_abs)[1].lstrip(".") or "wav").lower()
         wav_data = wav_bytes_from_float32(mix, self.sample_rate)
 
         if ext == "wav":
-            with open(out_path, "wb") as f:
-                f.write(wav_data)
+            fd, tmp_path = tempfile.mkstemp(prefix=".voicepanel_exp_", suffix=".wav", dir=out_dir)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(wav_data)
+                os.replace(tmp_path, out_abs)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                raise
             return
 
         ffmpeg = shutil.which("ffmpeg")
@@ -648,14 +732,16 @@ class MultiTrackSession:
         proc = subprocess.run(
             [
                 ffmpeg,
+                "-nostdin",
                 "-y",
                 "-v", "error",
                 "-f", "wav",
                 "-i", "pipe:0",
-                out_path,
+                out_abs,
             ],
             input=wav_data,
             capture_output=True,
+            timeout=60,
             check=False,
         )
         if proc.returncode != 0:
@@ -666,6 +752,14 @@ class MultiTrackSession:
     # Project Save / Load (.vpanel zip bundle using ZIP_STORED)
     # ------------------------------------------------------------------
     def save_project(self, path: str):
+        if not path or not isinstance(path, str) or "\x00" in path:
+            raise ValueError("Invalid project file path.")
+        abs_path = os.path.abspath(path)
+        if os.path.isdir(abs_path):
+            raise IsADirectoryError(f"Cannot save project over directory: {abs_path}")
+        out_dir = os.path.dirname(abs_path) or "."
+        os.makedirs(out_dir, exist_ok=True)
+
         meta = {
             "app": "VoicePanel",
             "version": 1,
@@ -674,55 +768,122 @@ class MultiTrackSession:
             "playhead_sample": self.playhead_sample,
             "tracks": [],
         }
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
-            for t in self.tracks:
-                wav_name = f"track_{t.index}.wav" if t.duration_samples > 0 else None
-                if wav_name:
-                    zf.writestr(wav_name, wav_bytes_from_float32(t.samples, self.sample_rate))
-                meta["tracks"].append({
-                    "index": t.index,
-                    "name": t.name,
-                    "offset_samples": t.offset_samples,
-                    "volume": t.volume,
-                    "pan": t.pan,
-                    "muted": t.muted,
-                    "solo": t.solo,
-                    "armed": t.armed,
-                    "color_hex": t.color_hex,
-                    "wav_file": wav_name,
-                })
-            zf.writestr("project.json", json.dumps(meta, indent=2).encode("utf-8"))
-        self.project_path = path
+        fd, tmp_path = tempfile.mkstemp(prefix=".voicepanel_proj_", suffix=".vpanel", dir=out_dir)
+        os.close(fd)
+        try:
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_STORED) as zf:
+                for t in self.tracks:
+                    wav_name = f"track_{t.index}.wav" if t.duration_samples > 0 else None
+                    if wav_name:
+                        zf.writestr(wav_name, wav_bytes_from_float32(t.samples, self.sample_rate))
+                    meta["tracks"].append({
+                        "index": t.index,
+                        "name": t.name,
+                        "offset_samples": t.offset_samples,
+                        "volume": t.volume,
+                        "pan": t.pan,
+                        "muted": t.muted,
+                        "solo": t.solo,
+                        "armed": t.armed,
+                        "color_hex": t.color_hex,
+                        "wav_file": wav_name,
+                    })
+                zf.writestr("project.json", json.dumps(meta, indent=2).encode("utf-8"))
+            os.replace(tmp_path, abs_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
+        self.project_path = abs_path
         self.modified = False
 
     def load_project(self, path: str):
-        with zipfile.ZipFile(path, "r") as zf:
-            meta = json.loads(zf.read("project.json").decode("utf-8"))
-            self.sample_rate = int(meta.get("sample_rate", DEFAULT_SAMPLE_RATE))
-            self.active_track_index = int(meta.get("active_track", 0))
-            self.playhead_sample = int(meta.get("playhead_sample", 0))
+        abs_path = verify_regular_file(path)
+        with zipfile.ZipFile(abs_path, "r") as zf:
+            if "project.json" not in zf.namelist():
+                raise ValueError("Invalid .vpanel archive: missing project.json")
+            p_info = zf.getinfo("project.json")
+            if p_info.file_size > MAX_PROJECT_JSON_BYTES:
+                raise ValueError("project.json exceeds maximum allowed size.")
+            with zf.open("project.json", "r") as fp:
+                raw_json = fp.read(MAX_PROJECT_JSON_BYTES + 1)
+            if len(raw_json) > MAX_PROJECT_JSON_BYTES:
+                raise ValueError("project.json stream exceeds maximum allowed size.")
+
+            meta = json.loads(raw_json.decode("utf-8"))
+            if not isinstance(meta, dict):
+                raise ValueError("Invalid project.json root structure.")
+
+            self.sample_rate = clamp_sample_rate(meta.get("sample_rate", DEFAULT_SAMPLE_RATE))
+            try:
+                act_idx = int(meta.get("active_track", 0))
+            except (ValueError, TypeError):
+                act_idx = 0
+            self.active_track_index = max(0, min(NUM_TRACKS - 1, act_idx))
+
+            try:
+                ph = int(meta.get("playhead_sample", 0))
+            except (ValueError, TypeError):
+                ph = 0
+            self.playhead_sample = max(0, min(MAX_TIMELINE_SAMPLES, ph))
             self.selection = None
-            for t_meta in meta.get("tracks", []):
-                idx = int(t_meta["index"])
+
+            tracks_meta = meta.get("tracks", [])
+            if not isinstance(tracks_meta, list):
+                tracks_meta = []
+
+            for t_meta in tracks_meta:
+                if not isinstance(t_meta, dict):
+                    continue
+                try:
+                    idx = int(t_meta.get("index", -1))
+                except (ValueError, TypeError):
+                    continue
                 if not (0 <= idx < NUM_TRACKS):
                     continue
                 t = self.tracks[idx]
-                t.name = t_meta.get("name", f"Track {idx + 1}")
-                t.offset_samples = int(t_meta.get("offset_samples", 0))
-                t.volume = float(t_meta.get("volume", 1.0))
-                t.pan = float(t_meta.get("pan", 0.0))
+                raw_name = str(t_meta.get("name") or f"Track {idx + 1}")
+                t.name = re.sub(r"[\x00-\x1f\x7f]+", " ", raw_name).strip()[:48] or f"Track {idx + 1}"
+                try:
+                    off = int(t_meta.get("offset_samples", 0))
+                except (ValueError, TypeError):
+                    off = 0
+                t.offset_samples = max(0, min(MAX_TIMELINE_SAMPLES, off))
+                try:
+                    vol = float(t_meta.get("volume", 1.0))
+                except (ValueError, TypeError):
+                    vol = 1.0
+                t.volume = max(0.0, min(2.0, vol))
+                try:
+                    pan = float(t_meta.get("pan", 0.0))
+                except (ValueError, TypeError):
+                    pan = 0.0
+                t.pan = max(-1.0, min(1.0, pan))
                 t.muted = bool(t_meta.get("muted", False))
                 t.solo = bool(t_meta.get("solo", False))
                 t.armed = bool(t_meta.get("armed", idx == 0))
-                t.color_hex = t_meta.get("color_hex", TRACK_COLORS[idx % len(TRACK_COLORS)])
+                t.color_hex = sanitize_hex_color(
+                    t_meta.get("color_hex", ""),
+                    fallback=TRACK_COLORS[idx % len(TRACK_COLORS)],
+                )
                 wav_name = t_meta.get("wav_file")
-                if wav_name and wav_name in zf.namelist():
-                    t.samples, _ = float32_from_wav_bytes(zf.read(wav_name), target_rate=self.sample_rate)
+                if isinstance(wav_name, str) and _SAFE_WAV_MEMBER_RE.match(wav_name) and wav_name in zf.namelist():
+                    w_info = zf.getinfo(wav_name)
+                    if w_info.file_size > MAX_IMPORT_FILE_BYTES:
+                        raise ValueError(f"Track member {wav_name} exceeds maximum safe uncompressed size.")
+                    with zf.open(wav_name, "r") as wfp:
+                        wav_bytes = wfp.read(MAX_IMPORT_FILE_BYTES + 1)
+                    if len(wav_bytes) > MAX_IMPORT_FILE_BYTES:
+                        raise ValueError(f"Track member {wav_name} stream exceeds maximum safe uncompressed size.")
+                    t.samples, _ = float32_from_wav_bytes(wav_bytes, target_rate=self.sample_rate)
                 else:
                     t.samples = empty_stereo(0)
         self._undo_stack.clear()
         self._redo_stack.clear()
-        self.project_path = path
+        self.project_path = abs_path
         self.modified = False
 
 
@@ -798,6 +959,7 @@ class AudioRecorder:
         self.last_error: Optional[str] = None
 
     def _build_capture_cmd(self) -> Optional[Tuple[str, List[str], int]]:
+        clean_dev = re.sub(r"[\x00-\x1f\x7f]+", "", str(self.device_name or "")).strip()
         parec = shutil.which("parec")
         if parec:
             cmd = [
@@ -807,8 +969,8 @@ class AudioRecorder:
                 "--channels=2",
                 "--latency-msec=20",
             ]
-            if self.device_name:
-                cmd.append(f"--device={self.device_name}")
+            if clean_dev:
+                cmd.append(f"--device={clean_dev}")
             return "parec", cmd, 4  # 4 bytes per float32 sample
 
         arecord = shutil.which("arecord")
@@ -881,8 +1043,9 @@ class AudioRecorder:
                         chunk = (np.frombuffer(buf, dtype="<i2").astype(np.float32) / 32768.0).reshape(-1, 2).copy()
                     peak = float(np.max(np.abs(chunk))) if len(chunk) else 0.0
                     with self._lock:
-                        self._chunks.append(chunk)
-                        self._total_frames += len(chunk)
+                        if self._total_frames + len(chunk) <= MAX_TRACK_SAMPLES:
+                            self._chunks.append(chunk)
+                            self._total_frames += len(chunk)
                         self.live_peak = max(peak, self.live_peak * 0.72)
             except Exception as e:
                 self.last_error = str(e)

@@ -31,11 +31,12 @@ from audio_engine import (
     NUM_TRACKS,
     SUPPORTED_AUDIO_EXTS,
     TRACK_COLORS,
+    sanitize_hex_color,
 )
 
 
 def hex_to_rgb(hex_color: str) -> Tuple[float, float, float]:
-    h = hex_color.lstrip("#")
+    h = sanitize_hex_color(hex_color).lstrip("#")
     return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
 
 
@@ -488,7 +489,8 @@ class TrackRow(Gtk.Box):
         # Row 1: Track badge, Editable Name, Import, Clear
         top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         lbl_idx = Gtk.Label()
-        lbl_idx.set_markup(f"<span foreground='{track.color_hex}'><b>T{track_index + 1}</b></span>")
+        safe_col = sanitize_hex_color(track.color_hex, fallback=TRACK_COLORS[track_index % len(TRACK_COLORS)])
+        lbl_idx.set_markup(f"<span foreground='{safe_col}'><b>T{track_index + 1}</b></span>")
         lbl_idx.set_width_chars(3)
         top_row.pack_start(lbl_idx, False, False, 0)
 
